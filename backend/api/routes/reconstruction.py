@@ -27,6 +27,7 @@ class JobStatusResponse(BaseModel):
 
 class StartJobRequest(BaseModel):
     epochs: int = 100
+    mode: str = "mesh"
 
 
 @router.post("/{session_id}", response_model=JobStatusResponse)
@@ -48,7 +49,7 @@ async def start_reconstruction(
         )
 
     update_state(session_id, "queued", 0, "Job added to queue.")
-    background_tasks.add_task(run_reconstruction, session_id, body.epochs)
+    background_tasks.add_task(run_reconstruction, session_id, body.epochs, body.mode)
 
     return JobStatusResponse(
         session_id=session_id, status="queued", progress=0,

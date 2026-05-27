@@ -25,8 +25,8 @@ export const NeRFApi = {
     return res.data;
   },
 
-  startReconstruction: async (sessionId: string, epochs = 100): Promise<JobStatusResponse> => {
-    const res = await apiClient.post<JobStatusResponse>(`/reconstruct/${sessionId}`, { epochs });
+  startReconstruction: async (sessionId: string, epochs = 100, mode = "mesh"): Promise<JobStatusResponse> => {
+    const res = await apiClient.post<JobStatusResponse>(`/reconstruct/${sessionId}`, { epochs, mode });
     return res.data;
   },
 

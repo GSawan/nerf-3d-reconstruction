@@ -63,7 +63,7 @@ def add_preview(session_id: str, preview_url: str):
         JOB_STATES[session_id]["previews"].append(preview_url)
 
 
-def run_reconstruction(session_id: str, epochs: int = 100):
+def run_reconstruction(session_id: str, epochs: int = 100, mode: str = "mesh"):
     """
     Full pipeline: COLMAP → transforms.json → NeRF Training → Previews
     """
@@ -115,6 +115,31 @@ def run_reconstruction(session_id: str, epochs: int = 100):
         update_state(session_id, "sparse_reconstruction", 35, "Exporting sparse point cloud to PLY...")
         sparse_ply = pipeline.export_sparse_ply()
         
+        if mode == "ngp":
+            update_state(session_id, "transforms_generation", 37, "Generating transforms.json for Instant-NGP...")
+            from services.colmap_to_nerf import convert
+            sparse_0 = os.path.join(session_dir, "sparse", "0")
+            images_dir = os.path.join(session_dir, "images")
+            transforms_out = os.path.join(session_dir, "transforms.json")
+            try:
+                convert(sparse_0, images_dir, transforms_out)
+                update_state(session_id, "transforms_generation", 39, "transforms.json successfully generated.")
+            except Exception as e:
+                error_msg = f"Failed to generate transforms.json: {str(e)}"
+                update_state(session_id, "failed", 0, error_msg, error="Transforms generation failed")
+                return
+
+            update_state(session_id, "ngp_training", 40, "Launching Instant-NGP GUI Viewer...")
+            
+            from config import INSTANT_NGP_PATH
+            import subprocess
+            cmd = [INSTANT_NGP_PATH, "--scene", session_dir]
+            logging.info(f"Launching NGP: {cmd}")
+            subprocess.Popen(cmd)
+            
+            update_state(session_id, "viewer_ready", 100, "Instant-NGP window launched locally! Training is actively running in the native viewer.")
+            return
+
         # ── Phase 2: Dense Stereo ──────────────────────────────────────────────
         update_state(session_id, "dense_reconstruction", 40, "Undistorting images for dense stereo...")
         pipeline.undistort_images()

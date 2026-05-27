@@ -8,9 +8,11 @@ interface NeRFState {
   jobStatus: JobStatusResponse | null;
   isPolling: boolean;
   globalError: string | null;
+  reconstructionMode: "mesh" | "ngp";
   
   // Actions
   setSession: (session: SessionResponse) => void;
+  setReconstructionMode: (mode: "mesh" | "ngp") => void;
   setError: (err: string | null) => void;
   startPolling: () => void;
   stopPolling: () => void;
@@ -34,6 +36,7 @@ export const useNeRFStore = create<NeRFState>((set, get) => {
     jobStatus: null,
     isPolling: false,
     globalError: null,
+    reconstructionMode: "ngp",
     
     setSession: (session) => {
       clearPoll();
@@ -47,6 +50,7 @@ export const useNeRFStore = create<NeRFState>((set, get) => {
     },
 
     setError: (err) => set({ globalError: err }),
+    setReconstructionMode: (mode) => set({ reconstructionMode: mode }),
 
     startPolling: () => {
       const { activeSessionId, isPolling } = get();

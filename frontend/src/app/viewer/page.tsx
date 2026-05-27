@@ -13,6 +13,9 @@ const PHASE_LABELS: Record<string, string> = {
   sparse_reconstruction: '1/4 SPARSE RECONSTRUCTION',
   dense_reconstruction: '2/4 DENSE STEREO',
   meshing: '3/4 SURFACE MESHING',
+  transforms_generation: '2/3 TRANSFORMS EXPORT',
+  ngp_training: '3/3 NGP TRAINING',
+  viewer_ready: 'VIEWER READY',
   completed: 'COMPLETED',
   failed: 'FAILED',
   idle: 'IDLE',
@@ -23,6 +26,9 @@ const PHASE_COLOR: Record<string, string> = {
   sparse_reconstruction: 'text-blue-400 animate-pulse',
   dense_reconstruction: 'text-indigo-400 animate-pulse',
   meshing: 'text-purple-400 animate-pulse',
+  transforms_generation: 'text-orange-400 animate-pulse',
+  ngp_training: 'text-pink-400 animate-pulse',
+  viewer_ready: 'text-emerald-400 font-bold',
   completed: 'text-emerald-400',
   failed: 'text-red-400',
   idle: 'text-[#e2e0d8]/50',
@@ -30,7 +36,7 @@ const PHASE_COLOR: Record<string, string> = {
 
 export default function ViewerDashboard() {
   const router = useRouter();
-  const { activeSessionId, jobStatus, startPolling, stopPolling } = useNeRFStore();
+  const { activeSessionId, jobStatus, startPolling, stopPolling, reconstructionMode } = useNeRFStore();
   const logsEndRef = useRef<HTMLDivElement>(null);
   const [activePreview, setActivePreview] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(false);
@@ -58,7 +64,7 @@ export default function ViewerDashboard() {
     if (!activeSessionId) return;
     setIsInitializing(true);
     try {
-      await NeRFApi.startReconstruction(activeSessionId, 100);
+      await NeRFApi.startReconstruction(activeSessionId, 100, reconstructionMode);
       startPolling();
     } catch (e: any) {
       console.error('Failed to start pipeline:', e?.response?.data || e.message);
@@ -67,8 +73,8 @@ export default function ViewerDashboard() {
   };
 
   const status = jobStatus?.status || 'idle';
-  const isActive = ['queued', 'sparse_reconstruction', 'dense_reconstruction', 'meshing'].includes(status);
-  const isCompleted = status === 'completed';
+  const isActive = ['queued', 'sparse_reconstruction', 'dense_reconstruction', 'meshing', 'transforms_generation', 'ngp_training'].includes(status);
+  const isCompleted = status === 'completed' || status === 'viewer_ready';
   const isFailed = status === 'failed';
   
   // Auto-clear initializing state once pipeline starts moving

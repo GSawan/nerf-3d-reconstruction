@@ -67,3 +67,8 @@ PADDING_COLOR = (0, 0, 0) # Neutral black padding
 BLUR_THRESHOLD = 50.0      # Laplacian variance threshold for blur rejection
 PHASH_HASH_SIZE = 8       # Perceptual hash sizing
 PHASH_THRESHOLD = 5       # Hamming distance threshold for duplicate rejection
+
+# ----------------------------------------
+# Instant-NGP Configuration
+# ----------------------------------------
+INSTANT_NGP_PATH = r"C:\Users\Sawan\Downloads\instant-ngp-bin\Instant-NGP-for-RTX-3000-and-4000\instant-ngp.exe"

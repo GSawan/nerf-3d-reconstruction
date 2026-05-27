@@ -9,6 +9,8 @@ export default function UploadDashboard() {
   const setSession = useNeRFStore(s => s.setSession);
   const setError = useNeRFStore(s => s.setError);
   const globalError = useNeRFStore(s => s.globalError);
+  const reconstructionMode = useNeRFStore(s => s.reconstructionMode);
+  const setReconstructionMode = useNeRFStore(s => s.setReconstructionMode);
   
   const [files, setFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -50,6 +52,10 @@ export default function UploadDashboard() {
   const handleUpload = async () => {
     if (files.length < 10) {
       setError("A minimum of 10 images is required for reconstruction.");
+      return;
+    }
+    if (reconstructionMode === "ngp" && files.length > 60) {
+      setError("NGP Mode has a hard limit of 60 images to prevent VRAM overflow. Please use Mesh mode for larger datasets.");
       return;
     }
     
@@ -132,8 +138,38 @@ export default function UploadDashboard() {
            </div>
          )}
          
-         <div className="pt-4 border-t border-[#e2e0d8]/10">
+         <div className="pt-4 border-t border-[#e2e0d8]/10 space-y-6">
+           <div className="flex items-center justify-between p-4 bg-[#111] border border-white/5">
+             <div className="space-y-1">
+               <h3 className="text-sm tracking-widest uppercase text-[#e2e0d8]">Reconstruction Pipeline</h3>
+               <p className="text-xs text-[#e2e0d8]/40" style={{ fontFamily: 'var(--font-outfit)' }}>
+                 {reconstructionMode === 'ngp' ? 'NVIDIA Instant-NGP (Fast, Real-time)' : 'Classical Mesh (Slower, Geometry focus)'}
+               </p>
+             </div>
+             <div className="flex bg-black p-1 border border-white/10">
+               <button 
+                 onClick={() => setReconstructionMode('mesh')}
+                 className={`px-4 py-2 text-xs tracking-widest uppercase transition-colors ${reconstructionMode === 'mesh' ? 'bg-[#e2e0d8] text-black' : 'text-white/40 hover:text-white'}`}
+               >
+                 MESH
+               </button>
+               <button 
+                 onClick={() => setReconstructionMode('ngp')}
+                 className={`px-4 py-2 text-xs tracking-widest uppercase transition-colors ${reconstructionMode === 'ngp' ? 'bg-[#e2e0d8] text-black' : 'text-white/40 hover:text-white'}`}
+               >
+                 NGP
+               </button>
+             </div>
+           </div>
+
+           {reconstructionMode === 'ngp' && files.length > 40 && (
+             <div className="p-3 bg-yellow-950/30 text-yellow-500/80 text-xs border border-yellow-900/50 uppercase tracking-wider text-center">
+               ⚠️ Warning: {files.length} images selected. NGP mode recommends 20-30 images for 4GB VRAM.
+             </div>
+           )}
+
            <button 
+
              onClick={handleUpload} 
              disabled={isUploading || files.length < 10}
              className={`w-full px-6 py-4 font-semibold tracking-[0.2em] uppercase transition-all duration-500 ${isUploading ? 'bg-[#e2e0d8]/20 text-[#e2e0d8] cursor-wait' : files.length >= 10 ? 'bg-[#e2e0d8] text-[#0a0a0a] hover:bg-white' : 'bg-[#111] text-[#e2e0d8]/30 cursor-not-allowed'}`}
