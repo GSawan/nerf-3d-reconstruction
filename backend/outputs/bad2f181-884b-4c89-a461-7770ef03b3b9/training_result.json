@@ -1,0 +1,7 @@
+{
+  "session_id": "bad2f181-884b-4c89-a461-7770ef03b3b9",
+  "epochs": 100,
+  "final_loss": 0.008125607751295984,
+  "final_psnr": 20.90144146267461,
+  "n_frames": 3
+}

@@ -1,0 +1,7 @@
+{
+  "session_id": "test123",
+  "epochs": 5,
+  "final_loss": 0.007456933377825111,
+  "final_psnr": 21.27439736991443,
+  "n_frames": 3
+}

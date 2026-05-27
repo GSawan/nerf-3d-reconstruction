@@ -1,0 +1,12 @@
+backend/datasets/
+backend/__pycache__/
+frontend/node_modules/
+frontend/.next/
+**/*.pyc
+**/*.pyo
+**/.DS_Store
+*.bin
+*.ply
+backend/venv/
+backend/env/
+.env

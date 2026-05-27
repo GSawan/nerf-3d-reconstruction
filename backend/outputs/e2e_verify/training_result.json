@@ -1,0 +1,7 @@
+{
+  "session_id": "e2e_test",
+  "epochs": 50,
+  "final_loss": 0.006325455256271923,
+  "final_psnr": 21.98908211943198,
+  "n_frames": 3
+}
