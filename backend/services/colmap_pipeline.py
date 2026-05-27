@@ -18,7 +18,7 @@ class ColmapPipeline:
         os.makedirs(self.sparse_dir, exist_ok=True)
         os.makedirs(self.dense_dir, exist_ok=True)
         
-    def _run_command(self, command: str, step_name: str):
+    def _run_command(self, command: str, step_name: str, ):
         """Helper to run a COLMAP command and capture output."""
         logging.info(f"Starting COLMAP step: {step_name}")
         logging.info(f"Command: {command}")
@@ -32,7 +32,7 @@ class ColmapPipeline:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=1800  # 30 minute timeout per step to prevent stuck worker
+                timeout=14400  # 4 hour timeout per step to prevent stuck worker
             )
             logging.info(f"{step_name} completed successfully.")
             return result.stdout
