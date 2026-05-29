@@ -33,7 +33,6 @@ export const useNeRFStore = create<NeRFState>((set, get) => {
     jobStatus: null,
     isPolling: false,
     globalError: null,
-    globalError: null,
     
     setSession: (session) => {
       clearPoll();

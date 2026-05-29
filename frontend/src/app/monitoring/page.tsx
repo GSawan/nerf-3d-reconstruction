@@ -1,7 +1,7 @@
 'use client';
 import { useRouter } from 'next/navigation';
 
-const ELASTIC_IP = process.env.NEXT_PUBLIC_API_URL?.replace('http://', '').replace('https://', '') || window?.location?.hostname || '<YOUR_EC2_IP>';
+
 
 export default function MonitoringPage() {
   const router = useRouter();

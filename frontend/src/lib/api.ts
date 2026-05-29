@@ -43,5 +43,11 @@ export const NeRFApi = {
   launchViewer: async (sessionId: string): Promise<any> => {
     const res = await apiClient.post(`/reconstruct/launch_viewer/${sessionId}`);
     return res.data;
+  },
+
+  cancelReconstruction: async (sessionId: string): Promise<any> => {
+    // Attempt cancellation if backend supports it
+    const res = await apiClient.post(`/reconstruct/cancel/${sessionId}`);
+    return res.data;
   }
 };
