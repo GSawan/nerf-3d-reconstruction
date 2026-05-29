@@ -82,12 +82,13 @@ export default function PLYViewer({ modelUrl }: PLYViewerProps) {
         const count = geometry.attributes.position.count;
         setPointCount(count);
 
-        // Material
+        const hasVertexColors = !!(geometry.attributes.color);
         const material = new THREE.PointsMaterial({
           size: pointSize * 0.005,
           sizeAttenuation: true,
-          vertexColors: geometry.attributes.color !== undefined,
-          color: geometry.attributes.color ? undefined : new THREE.Color('#88ccff'),
+          vertexColors: hasVertexColors,
+          // Always provide a valid color — when vertexColors=true, this acts as a multiplier (white = no tint)
+          color: new THREE.Color(hasVertexColors ? '#ffffff' : '#88ccff'),
         });
 
         const points = new THREE.Points(geometry, material);

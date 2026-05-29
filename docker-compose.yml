@@ -1,0 +1,152 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Neo3D — Docker Compose Stack
+# Pipeline: Upload → COLMAP → Reconstruction → Three.js Viewer
+#
+# Services:
+#   frontend  - Next.js UI (port 3000)
+#   backend   - FastAPI API server (port 8001)
+#   worker    - COLMAP reconstruction engine (no port — volume-based)
+#
+# Volumes:
+#   neo3d_datasets - Raw + preprocessed images (shared: backend ↔ worker)
+#   neo3d_outputs  - Final PLY files served to Three.js (shared: backend ↔ worker)
+#   neo3d_logs     - Structured JSON logs from all services
+#
+# Network:
+#   neo3d_net - Internal bridge network. Only frontend:3000 and backend:8001
+#               are exposed to the host. Worker has no host-facing port.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FRONTEND — Next.js
+  # ─────────────────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    image: neo3d-frontend:latest
+    container_name: neo3d_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - BACKEND_INTERNAL_URL=${BACKEND_INTERNAL_URL:-http://backend:8001}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+    depends_on:
+      backend:
+        condition: service_healthy   # Wait for backend health check to pass
+    networks:
+      - neo3d_net
+    # Frontend doesn't need persistent volumes — it's stateless
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BACKEND — FastAPI
+  # ─────────────────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    image: neo3d-backend:latest
+    container_name: neo3d_backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8001}:8001"
+    environment:
+      - COLMAP_PATH=${COLMAP_PATH:-/usr/bin/colmap}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-2048}
+      - MIN_IMAGES=${MIN_IMAGES:-5}
+      - PYTHONUTF8=1
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      # Persistent named volumes — data survives container restarts
+      - neo3d_datasets:/app/datasets
+      - neo3d_outputs:/app/outputs
+      - neo3d_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - neo3d_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WORKER — COLMAP Reconstruction Engine
+  #
+  # Design decisions:
+  # - profile: ["reconstruction"] means this container does NOT start with
+  #   `docker-compose up`. You must explicitly: docker-compose run worker
+  #   This is intentional — reconstruction is a job, not a long-running daemon.
+  # - Resource limits: COLMAP can consume all available RAM/CPU.
+  #   We cap it at 4GB RAM and 4 CPUs to keep the host responsive.
+  # - Shares the same volumes as backend so they can exchange files.
+  # ─────────────────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    image: neo3d-worker:latest
+    container_name: neo3d_worker
+    profiles:
+      - reconstruction   # Only starts when explicitly requested
+    environment:
+      - COLMAP_PATH=${COLMAP_PATH:-/usr/bin/colmap}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - PYTHONUTF8=1
+    volumes:
+      - neo3d_datasets:/datasets
+      - neo3d_outputs:/outputs
+      - neo3d_logs:/logs
+    deploy:
+      resources:
+        limits:
+          memory: 4G        # COLMAP can eat RAM — cap at 4GB
+          cpus: '4.0'       # Use up to 4 CPU cores
+    networks:
+      - neo3d_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VOLUMES
+# Named volumes persist across container restarts and rebuilds.
+# To clear all data: docker-compose down -v (WARNING: deletes all uploads/outputs)
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  neo3d_datasets:
+    name: neo3d_datasets
+  neo3d_outputs:
+    name: neo3d_outputs
+  neo3d_logs:
+    name: neo3d_logs
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NETWORKS
+# Internal bridge network — services talk to each other by service name
+# e.g., frontend → http://backend:8001
+# Only explicitly mapped ports (3000, 8001) are exposed to host
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  neo3d_net:
+    driver: bridge
+    name: neo3d_network

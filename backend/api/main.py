@@ -2,9 +2,15 @@ import os
 import shutil
 import time
 import asyncio
+import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from api.core.middleware.cors import setup_cors, setup_rate_limiter
+
+# Initialize structured logging BEFORE anything else
+from logging_config import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
 
 # Ensure directories exist BEFORE app creation (so StaticFiles mount succeeds)
 os.makedirs("outputs", exist_ok=True)
@@ -48,18 +54,18 @@ async def cleanup_old_datasets():
                     if os.path.isdir(path):
                         if now - os.path.getmtime(path) > 24 * 3600:
                             shutil.rmtree(path)
-                            print(f"[CLEANUP] Removed stale dataset: {session_dir}", flush=True)
+                            logger.info("Removed stale dataset", extra={"session_dir": session_dir})
         except Exception as e:
-            print(f"[CLEANUP ERROR] {e}", flush=True)
+            logger.warning("Cleanup error", extra={"error": str(e)})
         await asyncio.sleep(3600)
 
 
 @app.on_event("startup")
 async def startup_event():
-    print("[API] NeRF Backend v2.0 started - COLMAP -> PLY -> Three.js pipeline", flush=True)
+    logger.info("Neo3D backend started", extra={"version": "2.0", "pipeline": "COLMAP->PLY->Three.js"})
     asyncio.create_task(cleanup_old_datasets())
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    print("[API] Shutting down NeRF Backend...", flush=True)
+    logger.info("Neo3D backend shutting down")

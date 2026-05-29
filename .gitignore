@@ -29,6 +29,69 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# Environment — NEVER commit .env (only .env.example)
+.env
+.env.local
+.env.*.local
+
+# Docker volumes / data
+jenkins/data/
+docker/*/data/
+
+# Temporary / scratch files
+data/
+checkpoints/
+ffmpeg/
+sessions/
+outputs/
+3D/
+
+# One-off scripts (not part of the project)
+debug_dll.py
+test_ngp.py
+rewrite_*.py
+extract.js
+find_bust.js
+search_*.js
+generate_docx.py
+inspect_docx.py
+install_*.ps1
+install_*.bat
+dummy.jpg
+
+# Docs
+*.docx
+
+# Misc
+"git log --oneline --decorate --dat"
+backend/venv/
+backend/env/
+backend/config/
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# OS
+**/.DS_Store
+Thumbs.db
+
+# Binary / model files
+*.bin
+*.ply
+*.pth
+*.glb
+*.obj
+
+# Logs
+*.log
 
 # Environment
 .env
