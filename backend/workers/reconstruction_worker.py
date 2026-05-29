@@ -1,204 +1,386 @@
 """
-Full reconstruction + NeRF training worker.
-Pipeline: COLMAP → transforms.json → NeRF training → preview renders
+Reconstruction worker.
+Pipeline: Preprocess -> COLMAP Sparse -> Export PLY -> Done
+No Nerfstudio. No external viewers. Output served directly to Three.js in the website.
+
+COLMAP flag compatibility notes:
+- Do NOT use --SiftExtraction.use_gpu or --SiftMatching.use_gpu
+  These vary by COLMAP version and commonly fail on Windows builds.
+- Keep commands minimal and compatible with COLMAP 3.x+
 """
 import os
+import sys
 import logging
-from datetime import datetime
-from services.colmap_pipeline import ColmapPipeline
 import shutil
+import subprocess
+from datetime import datetime
 
 # In-memory job state store
 JOB_STATES = {}
 
+# COLMAP executable path — tries env var first, falls back to known path
+COLMAP_EXE = os.environ.get("COLMAP_PATH", r"C:\Users\Sawan\Downloads\COLMAP\COLMAP.bat")
+
+# Supported image extensions
+IMG_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# State Management
+# ─────────────────────────────────────────────────────────────────────────────
 
 def get_job_state(session_id: str):
     if session_id not in JOB_STATES:
-        return {"status": "unknown", "progress": 0, "logs": [], "error": None,
-                "epoch": 0, "total_epochs": 0, "loss": None, "psnr": None, "previews": []}
+        return {
+            "status": "unknown", "progress": 0, "logs": [],
+            "error": None, "model_url": None, "point_count": 0, "camera_count": 0
+        }
     return JOB_STATES[session_id]
 
 
 def update_state(session_id: str, status: str, progress: int, log_msg: str = None,
-                 error: str = None, epoch: int = None, total_epochs: int = None,
-                 loss: float = None, psnr: float = None):
+                 error: str = None, model_url: str = None,
+                 point_count: int = None, camera_count: int = None):
+    """Thread-safe state update. Pass status=None to keep existing status."""
     if session_id not in JOB_STATES:
         JOB_STATES[session_id] = {
-            "status": "queued", "progress": 0, "logs": [], "error": None,
-            "epoch": 0, "total_epochs": 0, "loss": None, "psnr": None, "previews": []
+            "status": "queued", "progress": 0, "logs": [],
+            "error": None, "model_url": None, "point_count": 0, "camera_count": 0
         }
 
     state = JOB_STATES[session_id]
-    state["status"] = status
-    state["progress"] = progress
 
-    if epoch is not None:
-        state["epoch"] = epoch
-    if total_epochs is not None:
-        state["total_epochs"] = total_epochs
-    if loss is not None:
-        state["loss"] = loss
-    if psnr is not None:
-        state["psnr"] = psnr
+    # Only update status if provided
+    if status is not None:
+        state["status"] = status
+
+    # Only update progress if it's a real value (not -1 sentinel)
+    if progress >= 0:
+        state["progress"] = progress
+
+    if model_url is not None:
+        state["model_url"] = model_url
+    if point_count is not None:
+        state["point_count"] = point_count
+    if camera_count is not None:
+        state["camera_count"] = camera_count
+    if error:
+        state["error"] = error
 
     if log_msg:
+        # Strip any non-ASCII characters to avoid Windows CP1252 encoding errors
+        safe_msg = log_msg.encode('ascii', errors='replace').decode('ascii')
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        formatted = f"[{ts}] {log_msg}"
+        formatted = f"[{ts}] {safe_msg}"
         state["logs"].append(formatted)
-        logging.info(f"[JOB {session_id[:8]}] {log_msg}")
 
+        # Print to console (safe)
+        try:
+            print(f"[JOB {session_id[:8]}] {safe_msg}", flush=True)
+        except Exception:
+            pass
+
+        # Write to disk log
         log_file = os.path.join("datasets", session_id, "job_log.txt")
         try:
-            with open(log_file, "a") as f:
+            with open(log_file, "a", encoding="utf-8") as f:
                 f.write(formatted + "\n")
         except Exception:
             pass
 
-    if error:
-        state["error"] = error
 
+# ─────────────────────────────────────────────────────────────────────────────
+# COLMAP Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-def add_preview(session_id: str, preview_url: str):
-    if session_id in JOB_STATES:
-        JOB_STATES[session_id]["previews"].append(preview_url)
-
-
-def run_reconstruction(session_id: str, epochs: int = 100, mode: str = "mesh"):
+def _run_colmap(cmd: str, step_name: str, session_id: str, timeout: int = 3600) -> str:
     """
-    Full pipeline: COLMAP → transforms.json → NeRF Training → Previews
+    Run a COLMAP command via subprocess.
+    Returns stdout string on success. Raises Exception on failure.
     """
+    logging.info(f"COLMAP CMD [{step_name}]: {cmd}")
     try:
-        session_dir = os.path.join("datasets", session_id)
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",   # Replace undecodable chars — prevents crash on COLMAP output
+            timeout=timeout,
+            env={**os.environ, "PYTHONUTF8": "1"}
+        )
+        # Log last few lines of COLMAP output
+        lines = [l.strip() for l in result.stdout.split('\n') if l.strip()]
+        for line in lines[-5:]:
+            update_state(session_id, None, -1, f"  [colmap] {line}")
+        return result.stdout
+
+    except subprocess.CalledProcessError as e:
+        # Get last 800 chars of output for error context
+        output = (e.stdout or "")[-800:].strip()
+        raise Exception(f"COLMAP {step_name} failed (code {e.returncode}):\n{output}")
+
+    except subprocess.TimeoutExpired:
+        raise Exception(
+            f"COLMAP {step_name} timed out after {timeout // 60} minutes. "
+            f"Try with fewer images."
+        )
+
+
+def _find_sparse_model(sparse_dir: str) -> str:
+    """
+    Find the largest/best sparse reconstruction output folder.
+    COLMAP mapper outputs sparse/0, sparse/1, etc.
+    Returns path to best model dir, or None if not found.
+    """
+    if not os.path.exists(sparse_dir):
+        return None
+
+    # Look for numbered subdirectories (0, 1, 2 ...)
+    candidates = []
+    for name in os.listdir(sparse_dir):
+        sub = os.path.join(sparse_dir, name)
+        if os.path.isdir(sub) and name.isdigit():
+            # Count points from points3D.bin or points3D.txt
+            size = 0
+            for pfile in ['points3D.bin', 'points3D.txt']:
+                ppath = os.path.join(sub, pfile)
+                if os.path.exists(ppath):
+                    size = os.path.getsize(ppath)
+                    break
+            candidates.append((size, sub))
+
+    if not candidates:
+        return None
+
+    # Return the one with the largest points file (most complete reconstruction)
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _count_images(images_dir: str) -> list:
+    """Return list of image filenames in a directory."""
+    if not os.path.exists(images_dir):
+        return []
+    return [
+        f for f in os.listdir(images_dir)
+        if os.path.splitext(f.lower())[1] in IMG_EXTS
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_reconstruction(session_id: str):
+    """
+    Full pipeline:
+      1. Validate uploaded images
+      2. COLMAP feature_extractor (CPU, no GPU flags = universal compatibility)
+      3. COLMAP exhaustive_matcher
+      4. COLMAP mapper (sparse reconstruction)
+      5. Export PLY point cloud
+      6. Serve to Three.js viewer in the website
+    """
+    session_dir = os.path.join("datasets", session_id)
+    images_dir = os.path.join(session_dir, "images")
+    sparse_dir = os.path.join(session_dir, "sparse")
+    database_path = os.path.join(session_dir, "database.db")
+    output_dir = os.path.join("outputs", session_id)
+
+    try:
+        # ── Pre-flight ────────────────────────────────────────────────────
+        os.makedirs(sparse_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
         if not os.path.exists(session_dir):
-            raise FileNotFoundError(f"Session directory not found: {session_dir}")
+            raise FileNotFoundError(
+                f"Session directory not found: {session_dir}. "
+                f"Please upload images again."
+            )
 
-        # ── Phase 1: COLMAP Sparse ──────────────────────────────────────────────
-        update_state(session_id, "sparse_reconstruction", 5, "Extracting features...")
-        pipeline = ColmapPipeline(session_dir=session_dir)
-        pipeline.extract_features()
+        images = _count_images(images_dir)
+        if len(images) < 5:
+            raise ValueError(
+                f"Only {len(images)} image(s) found in session. "
+                f"Need at least 5 images for reconstruction. "
+                f"Please upload more overlapping photos of your object."
+            )
 
-        update_state(session_id, "sparse_reconstruction", 15, "Matching features...")
-        pipeline.match_features()
+        update_state(session_id, "colmap_features", 5,
+                     f"Pipeline starting with {len(images)} images.")
 
-        update_state(session_id, "sparse_reconstruction", 30, "Running sparse reconstruction (mapper)...")
-        pipeline.reconstruct_sparse()
-        
-        update_state(session_id, "sparse_reconstruction", 32, "Analyzing sparse model...")
-        analyzer_output = pipeline.analyze_model()
-        
-        reg_imgs_count = 0
-        total_imgs_count = 1
-        sparse_points_count = 0
-        
-        if analyzer_output:
-            try:
-                total_imgs_count = len([f for f in os.listdir(pipeline.images_dir) if os.path.isfile(os.path.join(pipeline.images_dir, f))])
-            except Exception:
-                pass
-                
-            for line in analyzer_output.split('\n'):
+        # Verify COLMAP executable exists
+        colmap_path = COLMAP_EXE
+        # If it's a .bat file, verify it exists
+        if colmap_path.endswith('.bat') and not os.path.exists(colmap_path):
+            # Try to find colmap in PATH
+            result = subprocess.run(
+                "where colmap", shell=True, capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                colmap_path = result.stdout.strip().split('\n')[0]
+            else:
+                raise FileNotFoundError(
+                    f"COLMAP not found at '{COLMAP_EXE}' and not in PATH. "
+                    f"Please install COLMAP or set COLMAP_PATH environment variable."
+                )
+
+        # ── Step 1: Feature Extraction ────────────────────────────────────
+        update_state(session_id, "colmap_features", 10,
+                     "Step 1/4: Extracting SIFT features from images...")
+
+        # Remove stale database from previous runs
+        if os.path.exists(database_path):
+            os.remove(database_path)
+            update_state(session_id, None, -1, "Cleared previous database.")
+
+        # NOTE: Do NOT use --SiftExtraction.use_gpu or --FeatureExtraction.use_gpu
+        # These flags are version-specific and commonly fail on Windows COLMAP builds.
+        # COLMAP auto-detects GPU. For max compatibility we omit GPU flags entirely.
+        cmd = (
+            f'"{colmap_path}" feature_extractor '
+            f'--database_path "{database_path}" '
+            f'--image_path "{images_dir}" '
+            f'--ImageReader.camera_model SIMPLE_RADIAL '
+            f'--ImageReader.single_camera 1'
+        )
+        _run_colmap(cmd, "feature_extractor", session_id, timeout=1800)
+        update_state(session_id, "colmap_matching", 28,
+                     "Step 1/4 done: Features extracted from all images.")
+
+        # ── Step 2: Feature Matching ──────────────────────────────────────
+        update_state(session_id, "colmap_matching", 32,
+                     "Step 2/4: Matching features across all image pairs...")
+
+        # For <= 50 images: exhaustive_matcher (most reliable)
+        # For > 50 images: vocab_tree_matcher would be faster but needs a vocab tree file
+        # We'll stick with exhaustive for reliability
+        cmd = (
+            f'"{colmap_path}" exhaustive_matcher '
+            f'--database_path "{database_path}"'
+        )
+        _run_colmap(cmd, "exhaustive_matcher", session_id, timeout=1800)
+        update_state(session_id, "colmap_sparse", 52,
+                     "Step 2/4 done: Feature matching complete.")
+
+        # ── Step 3: Sparse Reconstruction (Mapper) ────────────────────────
+        update_state(session_id, "colmap_sparse", 56,
+                     "Step 3/4: Running COLMAP mapper (this takes 1-5 minutes)...")
+
+        cmd = (
+            f'"{colmap_path}" mapper '
+            f'--database_path "{database_path}" '
+            f'--image_path "{images_dir}" '
+            f'--output_path "{sparse_dir}" '
+            f'--Mapper.num_threads 4 '
+            f'--Mapper.init_min_tri_angle 4'
+        )
+        _run_colmap(cmd, "mapper", session_id, timeout=3600)
+        update_state(session_id, "colmap_sparse", 72,
+                     "Step 3/4 done: Sparse 3D reconstruction complete.")
+
+        # ── Find best model ───────────────────────────────────────────────
+        best_model = _find_sparse_model(sparse_dir)
+        if best_model is None:
+            raise Exception(
+                "COLMAP mapper ran but produced NO reconstruction. "
+                "Common causes: "
+                "(1) Not enough image overlap — walk around the object slowly. "
+                "(2) Images too blurry or dark. "
+                "(3) Object has very uniform/plain texture (glass, white walls). "
+                "Try capturing 30-50 photos at different angles with good lighting."
+            )
+
+        update_state(session_id, "colmap_sparse", 73,
+                     f"Found sparse model at: {os.path.basename(best_model)}")
+
+        # ── Analyze model stats ───────────────────────────────────────────
+        cam_count = 0
+        pt_count = 0
+        try:
+            analyze_out = _run_colmap(
+                f'"{colmap_path}" model_analyzer --path "{best_model}"',
+                "model_analyzer", session_id, timeout=120
+            )
+            for line in analyze_out.split('\n'):
                 line = line.strip()
-                if "Registered images:" in line:
-                    reg_imgs_count = int(line.split(":")[-1].strip())
-                    update_state(session_id, "sparse_reconstruction", 33, f"Registered cameras: {reg_imgs_count} / {total_imgs_count}")
-                elif "Points:" in line:
-                    sparse_points_count = int(line.split(":")[-1].strip())
-                    update_state(session_id, "sparse_reconstruction", 34, f"Sparse points: {sparse_points_count}")
-        
-        # QUALITY GATE
-        registration_ratio = (reg_imgs_count / max(1, total_imgs_count)) * 100
-        if registration_ratio < 20 or sparse_points_count < 500:
-            error_msg = f"Insufficient reconstruction quality. Registered only {reg_imgs_count}/{total_imgs_count} cameras ({registration_ratio:.1f}%) and {sparse_points_count} sparse points. Minimum required is 20% registration and 500 points."
-            update_state(session_id, "failed", 0, error_msg, error="Insufficient camera registration")
-            return
-            
-        update_state(session_id, "sparse_reconstruction", 35, "Exporting sparse point cloud to PLY...")
-        sparse_ply = pipeline.export_sparse_ply()
-        
-        if mode == "ngp":
-            update_state(session_id, "transforms_generation", 37, "Generating transforms.json for Instant-NGP...")
-            from services.colmap_to_nerf import convert
-            sparse_0 = os.path.join(session_dir, "sparse", "0")
-            images_dir = os.path.join(session_dir, "images")
-            transforms_out = os.path.join(session_dir, "transforms.json")
-            try:
-                convert(sparse_0, images_dir, transforms_out)
-                update_state(session_id, "transforms_generation", 39, "transforms.json successfully generated.")
-            except Exception as e:
-                error_msg = f"Failed to generate transforms.json: {str(e)}"
-                update_state(session_id, "failed", 0, error_msg, error="Transforms generation failed")
-                return
+                if 'Registered images:' in line:
+                    try:
+                        cam_count = int(line.split(':')[-1].strip())
+                    except ValueError:
+                        pass
+                elif 'Points:' in line and ':' in line:
+                    try:
+                        pt_count = int(line.split(':')[-1].strip())
+                    except ValueError:
+                        pass
+            update_state(session_id, "colmap_sparse", 76,
+                         f"Cameras registered: {cam_count}/{len(images)} | 3D points: {pt_count}",
+                         camera_count=cam_count, point_count=pt_count)
+        except Exception as e:
+            # Model analysis is optional
+            update_state(session_id, None, -1,
+                         f"Model analysis skipped (non-critical): {str(e)[:100]}")
 
-            update_state(session_id, "ngp_training", 40, "Launching Instant-NGP GUI Viewer...")
-            
-            from config import INSTANT_NGP_PATH
-            import subprocess
-            cmd = [INSTANT_NGP_PATH, "--scene", session_dir]
-            logging.info(f"Launching NGP: {cmd}")
-            subprocess.Popen(cmd)
-            
-            update_state(session_id, "viewer_ready", 100, "Instant-NGP window launched locally! Training is actively running in the native viewer.")
-            return
+        # Warn if registration ratio is poor but don't fail
+        if cam_count > 0 and cam_count < len(images) * 0.5:
+            update_state(session_id, None, -1,
+                         f"WARNING: Only {cam_count}/{len(images)} cameras registered. "
+                         f"Result may be incomplete. Consider re-capturing with more overlap.")
 
-        # ── Phase 2: Dense Stereo ──────────────────────────────────────────────
-        update_state(session_id, "dense_reconstruction", 40, "Undistorting images for dense stereo...")
-        pipeline.undistort_images()
-        
-        update_state(session_id, "dense_reconstruction", 50, "Running dense patch-match stereo...")
-        pipeline.run_patch_match()
-        
-        update_state(session_id, "dense_reconstruction", 65, "Fusing dense depth maps into point cloud...")
-        dense_ply = pipeline.run_stereo_fusion()
-        
-        # ── Phase 3: Poisson Surface Reconstruction ────────────────────────────
-        update_state(session_id, "meshing", 80, "Generating Poisson surface mesh...")
-        mesh_ply = pipeline.generate_mesh()
-        
-        # ── Artifact Export & Validation ───────────────────────────────────────
-        update_state(session_id, "meshing", 90, "Validating generated artifacts and organizing output...")
-        
-        output_model_dir = os.path.join(session_dir, "model")
-        os.makedirs(output_model_dir, exist_ok=True)
-        
-        valid_artifacts = []
-        
-        def is_valid_ply(filepath):
-            if not filepath or not os.path.exists(filepath):
-                return False
-            if os.path.getsize(filepath) < 1024:  # Must be > 1KB
-                return False
-            return True
-            
-        if is_valid_ply(mesh_ply):
-            shutil.copy2(mesh_ply, os.path.join(output_model_dir, "mesh.ply"))
-            valid_artifacts.append("mesh.ply")
-            
-        if is_valid_ply(dense_ply):
-            shutil.copy2(dense_ply, os.path.join(output_model_dir, "dense.ply"))
-            valid_artifacts.append("dense.ply")
-            
-        if is_valid_ply(sparse_ply):
-            shutil.copy2(sparse_ply, os.path.join(output_model_dir, "sparse.ply"))
-            valid_artifacts.append("sparse.ply")
-            
-        if not valid_artifacts:
-            update_state(session_id, "failed", 0, "All artifacts failed validation. Reconstruction collapsed.", error="Artifact generation failed")
-            return
-            
-        # Select canonical model
-        canonical_target = os.path.join(output_model_dir, "model.ply")
-        if "mesh.ply" in valid_artifacts:
-            shutil.copy2(os.path.join(output_model_dir, "mesh.ply"), canonical_target)
-            msg = "Mesh generated successfully!"
-        elif "dense.ply" in valid_artifacts:
-            shutil.copy2(os.path.join(output_model_dir, "dense.ply"), canonical_target)
-            msg = "Meshing failed, falling back to dense point cloud."
-        else:
-            shutil.copy2(os.path.join(output_model_dir, "sparse.ply"), canonical_target)
-            msg = "Dense stereo failed, falling back to sparse point cloud."
+        # ── Step 4: Export PLY ────────────────────────────────────────────
+        update_state(session_id, "exporting", 80,
+                     "Step 4/4: Exporting 3D point cloud to PLY format...")
 
-        update_state(session_id, "completed", 100, f"Pipeline complete. {msg}")
+        # Use a safe output path (no spaces issue with quotes in the cmd)
+        ply_path = os.path.join(best_model, "sparse.ply")
+        cmd = (
+            f'"{colmap_path}" model_converter '
+            f'--input_path "{best_model}" '
+            f'--output_path "{ply_path}" '
+            f'--output_type PLY'
+        )
+        _run_colmap(cmd, "model_converter", session_id, timeout=300)
+
+        if not os.path.exists(ply_path):
+            raise Exception(
+                "PLY export failed: sparse.ply was not created by model_converter. "
+                "Check if COLMAP has write permissions to the output directory."
+            )
+
+        ply_size_bytes = os.path.getsize(ply_path)
+        if ply_size_bytes < 100:
+            raise Exception(
+                f"PLY file is too small ({ply_size_bytes} bytes) — likely empty or corrupt. "
+                f"The reconstruction may have produced 0 3D points."
+            )
+
+        # Copy PLY to outputs directory (served as static file by FastAPI)
+        final_ply = os.path.join(output_dir, "model.ply")
+        shutil.copy2(ply_path, final_ply)
+        ply_size_kb = ply_size_bytes // 1024
+        update_state(session_id, "exporting", 95,
+                     f"Point cloud exported: {ply_size_kb} KB ({pt_count} points)")
+
+        # ── Done ──────────────────────────────────────────────────────────
+        model_url = f"/api/v1/outputs/{session_id}/model.ply"
+        update_state(session_id, "completed", 100,
+                     "RECONSTRUCTION COMPLETE! 3D model is ready. View it below.",
+                     model_url=model_url)
+
+        logging.info(f"[JOB {session_id[:8]}] SUCCESS - {final_ply} ({ply_size_kb} KB)")
 
     except Exception as e:
-        update_state(session_id, "failed", 0, f"Pipeline failed: {str(e)}", error=str(e))
-        logging.exception(f"[JOB {session_id[:8]}] Unhandled error:")
+        err_msg = str(e)
+        # Strip non-ASCII from error message too
+        safe_err = err_msg.encode('ascii', errors='replace').decode('ascii')
+        update_state(
+            session_id, "failed", 0,
+            f"PIPELINE FAILED: {safe_err}",
+            error=safe_err
+        )
+        logging.exception(f"[JOB {session_id[:8]}] Unhandled error in pipeline:")

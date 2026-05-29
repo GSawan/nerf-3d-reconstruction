@@ -16,17 +16,18 @@ export const NeRFApi = {
     return res.data;
   },
 
-  uploadDataset: async (files: File[]): Promise<SessionResponse> => {
+  uploadDataset: async (files: File[], mode: string = "high"): Promise<SessionResponse> => {
     const formData = new FormData();
     files.forEach(file => formData.append('files', file));
+    formData.append('mode', mode);
     const res = await apiClient.post<SessionResponse>('/upload/', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
     return res.data;
   },
 
-  startReconstruction: async (sessionId: string, epochs = 100, mode = "mesh"): Promise<JobStatusResponse> => {
-    const res = await apiClient.post<JobStatusResponse>(`/reconstruct/${sessionId}`, { epochs, mode });
+  startReconstruction: async (sessionId: string): Promise<JobStatusResponse> => {
+    const res = await apiClient.post<JobStatusResponse>(`/reconstruct/${sessionId}`, {});
     return res.data;
   },
 
@@ -37,6 +38,10 @@ export const NeRFApi = {
 
   getOutputUrl: (sessionId: string, filename: string): string => {
     return `${API_BASE}/outputs/${sessionId}/${filename}`;
+  },
+
+  launchViewer: async (sessionId: string): Promise<any> => {
+    const res = await apiClient.post(`/reconstruct/launch_viewer/${sessionId}`);
+    return res.data;
   }
 };
-

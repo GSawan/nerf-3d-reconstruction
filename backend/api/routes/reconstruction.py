@@ -18,30 +18,22 @@ class JobStatusResponse(BaseModel):
     progress: int
     logs: List[str]
     error: Optional[str] = None
-    epoch: int = 0
-    total_epochs: int = 0
-    loss: Optional[float] = None
-    psnr: Optional[float] = None
-    previews: List[str] = []
-
-
-class StartJobRequest(BaseModel):
-    epochs: int = 100
-    mode: str = "mesh"
+    model_url: Optional[str] = None
+    point_count: int = 0
+    camera_count: int = 0
 
 
 @router.post("/{session_id}", response_model=JobStatusResponse)
 async def start_reconstruction(
     session_id: str,
-    background_tasks: BackgroundTasks,
-    body: StartJobRequest = StartJobRequest()
+    background_tasks: BackgroundTasks
 ):
-    """Starts the full reconstruction pipeline: COLMAP → NeRF Training → Renders."""
+    """Starts the full reconstruction pipeline: COLMAP → PLY export."""
     if not is_valid_uuid(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID format.")
-        
+
     state = get_job_state(session_id)
-    active_states = ["queued", "sparse_reconstruction", "dense_reconstruction", "meshing"]
+    active_states = ["queued", "colmap_features", "colmap_matching", "colmap_sparse", "exporting"]
     if state["status"] in active_states:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -49,7 +41,7 @@ async def start_reconstruction(
         )
 
     update_state(session_id, "queued", 0, "Job added to queue.")
-    background_tasks.add_task(run_reconstruction, session_id, body.epochs, body.mode)
+    background_tasks.add_task(run_reconstruction, session_id)
 
     return JobStatusResponse(
         session_id=session_id, status="queued", progress=0,
@@ -59,34 +51,29 @@ async def start_reconstruction(
 
 @router.get("/status/{session_id}", response_model=JobStatusResponse)
 async def get_reconstruction_status(session_id: str):
-    """Polls the live status and training metrics for a session."""
+    """Polls the live status for a session."""
     if not is_valid_uuid(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID format.")
-        
+
     state = get_job_state(session_id)
-    # Return idle state instead of 404 — prevents frontend polling crashes
-    # on race conditions or after server restarts
     return JobStatusResponse(
         session_id=session_id,
         status=state["status"] if state["status"] != "unknown" else "idle",
         progress=state["progress"],
         logs=state["logs"],
         error=state["error"],
-        epoch=state.get("epoch", 0),
-        total_epochs=state.get("total_epochs", 0),
-        loss=state.get("loss"),
-        psnr=state.get("psnr"),
-        previews=state.get("previews", [])
+        model_url=state.get("model_url"),
+        point_count=state.get("point_count", 0),
+        camera_count=state.get("camera_count", 0),
     )
 
 
 @router.get("/outputs/{session_id}/{filename}")
 async def get_output_file(session_id: str, filename: str):
-    """Serves rendered preview images."""
+    """Serves output files (PLY, etc.)."""
     if not is_valid_uuid(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID format.")
-        
-    # Prevent path traversal
+
     safe_filename = os.path.basename(filename)
     path = os.path.join("outputs", session_id, safe_filename)
     if not os.path.exists(path):

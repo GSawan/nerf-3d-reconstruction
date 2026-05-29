@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -8,8 +8,11 @@ class SessionResponse(BaseModel):
     rejected_count: int
     deduplicated_count: int
     rejection_reasons: Dict[str, int]
-    preprocessing_resolution: tuple
+    preprocessing_resolution: Tuple[int, int]
     aabb_scale: float
+    health_score: int = 100
+    mode: str = "high"
+    image_truncation_count: int = 0
 
 class JobStartRequest(BaseModel):
     epochs: Optional[int] = None
