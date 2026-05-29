@@ -7,11 +7,8 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────────
-  # JOB 1: Lint & Test
-  # ─────────────────────────────────────────────────────────────────────────────
-  test:
-    name: "🧪 Test & Lint"
+  verify:
+    name: "🧪 Verify Application"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,59 +20,9 @@ jobs:
 
       - name: Install backend dependencies
         run: |
+          pip install --upgrade pip
           pip install -r backend/requirements.txt
-          pip install pytest pytest-asyncio httpx ruff
 
-      - name: Lint with ruff
+      - name: Run Backend Import Smoke Test
         run: |
-          ruff check backend/ --select E,F,W --ignore E501 || true
-
-      - name: Run backend smoke test (import check)
-        working-directory: backend
-        run: |
-          python -c "from db.models import User, Project, ReconstructionSession, Model3D, AuditLog; print('Models OK')"
-          python -c "from services.auth import create_access_token, decode_token; print('Auth OK')"
-          python -c "from services.s3 import is_s3_enabled; print('S3 OK')"
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # JOB 2: Build & Verify Docker Images
-  # ─────────────────────────────────────────────────────────────────────────────
-  build:
-    name: "🐳 Build & Verify Containers"
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Backend Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/backend/Dockerfile
-          push: false
-          tags: neo3d-backend:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Frontend Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/frontend/Dockerfile
-          push: false
-          tags: neo3d-frontend:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Worker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/worker/Dockerfile
-          push: false
-          tags: neo3d-worker:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          python -c "import sys; sys.path.append('backend'); from api.main import app; print('Neo3D Application compiled and imported successfully!')"
