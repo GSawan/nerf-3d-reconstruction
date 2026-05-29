@@ -67,7 +67,7 @@ export default function NativeHeroScene({ hideStatue = false }: { hideStatue?: b
         )}
         
         {/* Restrained Postprocessing */}
-        <EffectComposer disableNormalPass multisampling={4}>
+        <EffectComposer multisampling={4}>
           <Noise opacity={0.025} />
           <Vignette eskil={false} offset={0.1} darkness={0.8} />
         </EffectComposer>
