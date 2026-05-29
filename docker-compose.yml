@@ -3,24 +3,34 @@
 # Pipeline: Upload → COLMAP → Reconstruction → Three.js Viewer
 #
 # Services:
-#   frontend  - Next.js UI (port 3000)
-#   backend   - FastAPI API server (port 8001)
-#   worker    - COLMAP reconstruction engine (no port — volume-based)
+#   frontend    - Next.js UI                    (host port 3001)
+#   backend     - FastAPI API server             (host port 8001)
+#   prometheus  - Metrics scraper               (host port 9090)
+#   grafana     - Monitoring dashboard           (host port 3000)
+#   worker      - COLMAP reconstruction engine  (no port — volume-based)
+#
+# Port Map (NO CONFLICTS):
+#   3001 → Frontend (Next.js)
+#   8001 → Backend  (FastAPI)
+#   9090 → Prometheus
+#   3000 → Grafana
 #
 # Volumes:
-#   neo3d_datasets - Raw + preprocessed images (shared: backend ↔ worker)
-#   neo3d_outputs  - Final PLY files served to Three.js (shared: backend ↔ worker)
-#   neo3d_logs     - Structured JSON logs from all services
+#   neo3d_datasets   - Raw + preprocessed images (shared: backend ↔ worker)
+#   neo3d_outputs    - Final PLY files served to Three.js
+#   neo3d_logs       - Structured JSON logs
+#   neo3d_grafana    - Grafana dashboard state (persists dashboards/settings)
 #
 # Network:
-#   neo3d_net - Internal bridge network. Only frontend:3000 and backend:8001
-#               are exposed to the host. Worker has no host-facing port.
+#   neo3d_net - Internal bridge network. Services talk by service name.
+#               Only explicitly mapped ports are exposed to the host.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # FRONTEND — Next.js
+  # Host: 3001 → Container: 3000
   # ─────────────────────────────────────────────────────────────────────────────
   frontend:
     build:
@@ -30,17 +40,16 @@ services:
     container_name: neo3d_frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "3001:3000"
     environment:
       - NODE_ENV=production
-      - BACKEND_INTERNAL_URL=${BACKEND_INTERNAL_URL:-http://backend:8001}
+      - BACKEND_INTERNAL_URL=http://backend:8001
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
     depends_on:
       backend:
-        condition: service_healthy   # Wait for backend health check to pass
+        condition: service_healthy
     networks:
       - neo3d_net
-    # Frontend doesn't need persistent volumes — it's stateless
     logging:
       driver: "json-file"
       options:
@@ -49,6 +58,7 @@ services:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # BACKEND — FastAPI
+  # Host: 8001 → Container: 8001
   # ─────────────────────────────────────────────────────────────────────────────
   backend:
     build:
@@ -58,7 +68,7 @@ services:
     container_name: neo3d_backend
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-8001}:8001"
+      - "8001:8001"
     environment:
       - COLMAP_PATH=${COLMAP_PATH:-/usr/bin/colmap}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -68,7 +78,6 @@ services:
       - PYTHONUTF8=1
       - PYTHONIOENCODING=utf-8
     volumes:
-      # Persistent named volumes — data survives container restarts
       - neo3d_datasets:/app/datasets
       - neo3d_outputs:/app/outputs
       - neo3d_logs:/app/logs
@@ -87,15 +96,66 @@ services:
         max-file: "5"
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # PROMETHEUS — Metrics Scraper
+  # Scrapes /metrics from FastAPI backend every 15s
+  # Host: 9090 → Container: 9090
+  # Uses official prom/prometheus image (no build needed)
+  # ─────────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: neo3d_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    networks:
+      - neo3d_net
+    depends_on:
+      - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GRAFANA — Monitoring Dashboard
+  # Host: 3000 → Container: 3000
+  # Default login: admin / admin
+  # ─────────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: neo3d_grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - neo3d_grafana:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning:ro
+    networks:
+      - neo3d_net
+    depends_on:
+      - prometheus
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # WORKER — COLMAP Reconstruction Engine
-  #
-  # Design decisions:
-  # - profile: ["reconstruction"] means this container does NOT start with
-  #   `docker-compose up`. You must explicitly: docker-compose run worker
-  #   This is intentional — reconstruction is a job, not a long-running daemon.
-  # - Resource limits: COLMAP can consume all available RAM/CPU.
-  #   We cap it at 4GB RAM and 4 CPUs to keep the host responsive.
-  # - Shares the same volumes as backend so they can exchange files.
+  # profile: ["reconstruction"] → does NOT start with `docker compose up`
+  # Run manually: docker compose run worker
   # ─────────────────────────────────────────────────────────────────────────────
   worker:
     build:
@@ -104,7 +164,7 @@ services:
     image: neo3d-worker:latest
     container_name: neo3d_worker
     profiles:
-      - reconstruction   # Only starts when explicitly requested
+      - reconstruction
     environment:
       - COLMAP_PATH=${COLMAP_PATH:-/usr/bin/colmap}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -117,8 +177,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G        # COLMAP can eat RAM — cap at 4GB
-          cpus: '4.0'       # Use up to 4 CPU cores
+          memory: 4G
+          cpus: '4.0'
     networks:
       - neo3d_net
     logging:
@@ -129,8 +189,6 @@ services:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VOLUMES
-# Named volumes persist across container restarts and rebuilds.
-# To clear all data: docker-compose down -v (WARNING: deletes all uploads/outputs)
 # ─────────────────────────────────────────────────────────────────────────────
 volumes:
   neo3d_datasets:
@@ -139,12 +197,11 @@ volumes:
     name: neo3d_outputs
   neo3d_logs:
     name: neo3d_logs
+  neo3d_grafana:
+    name: neo3d_grafana
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NETWORKS
-# Internal bridge network — services talk to each other by service name
-# e.g., frontend → http://backend:8001
-# Only explicitly mapped ports (3000, 8001) are exposed to host
 # ─────────────────────────────────────────────────────────────────────────────
 networks:
   neo3d_net:

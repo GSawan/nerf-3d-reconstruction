@@ -1,0 +1,39 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "nerf-backend",
+    "title": "NeRF System Dashboard",
+    "tags": [ "templated" ],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 0,
+    "refresh": "5s",
+    "panels": [
+      {
+        "type": "timeseries",
+        "title": "Backend CPU Usage",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "id": 1,
+        "targets": [
+          {
+            "expr": "process_cpu_seconds_total",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Active API Requests",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "id": 2,
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[1m])",
+            "refId": "A"
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}

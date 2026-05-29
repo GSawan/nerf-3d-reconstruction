@@ -13,7 +13,7 @@ scrape_configs:
   # FastAPI Backend — exposes /metrics via prometheus-fastapi-instrumentator
   - job_name: "neo3d-backend"
     static_configs:
-      - targets: ["backend:8000"]
+      - targets: ["backend:8001"]
     metrics_path: /metrics
 
   # Prometheus itself
