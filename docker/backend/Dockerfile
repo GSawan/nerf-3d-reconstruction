@@ -29,16 +29,7 @@ COPY backend/requirements.txt ./requirements.txt
 
 # Use headless OpenCV (no X11/GUI deps) — critical for server environments
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-        opencv-python-headless \
-        fastapi \
-        "uvicorn[standard]" \
-        python-multipart \
-        pydantic \
-        numpy \
-        imageio \
-        matplotlib \
-        aiofiles
+    pip install --no-cache-dir -r requirements.txt
 
 # ─── Copy application code ───────────────────────────────────────────────────
 COPY backend/ .
