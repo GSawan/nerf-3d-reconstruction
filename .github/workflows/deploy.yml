@@ -37,9 +37,10 @@ jobs:
       - name: Run backend smoke test (import check)
         working-directory: backend
         run: |
-          python -c "from db.models import User, Project, ReconstructionSession, Model3D, AuditLog; print('✅ Models OK')"
-          python -c "from services.auth import create_access_token, decode_token; print('✅ Auth OK')"
-          python -c "from services.s3 import is_s3_enabled; print('✅ S3 OK')"
+          python -c "from db.models import User, Project, ReconstructionSession, Model3D, AuditLog; print('Models OK')"
+          python -c "from services.auth import create_access_token, decode_token; print('Auth OK')"
+          python -c "from services.s3 import is_s3_enabled; print('S3 OK')"
+
 
   # ─────────────────────────────────────────────────────────────────────────────
   # JOB 2: Build & Push Docker Images (main branch only)
