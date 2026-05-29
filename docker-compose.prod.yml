@@ -1,22 +1,36 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Neo3D — Production Docker Compose Stack (AWS EC2)
-#
-# This file is used specifically on the AWS EC2 instance.
-# It does NOT build images; it pulls them from a Docker registry.
+# Neo3D — Production Docker Compose Stack (AWS EC2 - t3a.medium)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # NGINX — Reverse Proxy & SSL Termination
+  # ─────────────────────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: neo3d_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - neo3d_net
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # FRONTEND — Next.js
   # ─────────────────────────────────────────────────────────────────────────────
   frontend:
-    # Jenkins will replace ${DOCKER_USER} with your actual registry username
     image: ${DOCKER_USER:-neo3d}/neo3d-frontend:latest
     container_name: neo3d_frontend
     restart: always
-    ports:
-      - "80:3000"  # Expose directly to port 80 for Phase 2.1 (Nginx in 2.5)
     environment:
       - NODE_ENV=production
       - BACKEND_INTERNAL_URL=http://backend:8001
@@ -39,8 +53,6 @@ services:
     image: ${DOCKER_USER:-neo3d}/neo3d-backend:latest
     container_name: neo3d_backend
     restart: always
-    ports:
-      - "8001:8001"
     environment:
       - COLMAP_PATH=/usr/bin/colmap
       - LOG_LEVEL=INFO
@@ -49,10 +61,14 @@ services:
       - MIN_IMAGES=5
       - PYTHONUTF8=1
       - PYTHONIOENCODING=utf-8
+      - DATABASE_URL=postgresql+asyncpg://neo3d:neo3d_secret_password@db:5432/neo3d
     volumes:
       - neo3d_datasets:/app/datasets
       - neo3d_outputs:/app/outputs
       - neo3d_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/health/"]
       interval: 30s
@@ -87,7 +103,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3.5G      # Capped slightly below 4GB for t3.medium safety
+          memory: 2.5G      # Strict limit to prevent OOM on 4GB host
           cpus: '2.0'       # Use 2 vCPUs
     networks:
       - neo3d_net
@@ -97,6 +113,32 @@ services:
         max-size: "50m"
         max-file: "3"
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DATABASE — PostgreSQL 15
+  # ─────────────────────────────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: neo3d_db
+    restart: always
+    environment:
+      - POSTGRES_USER=neo3d
+      - POSTGRES_PASSWORD=neo3d_secret_password
+      - POSTGRES_DB=neo3d
+    volumes:
+      - neo3d_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neo3d -d neo3d"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - neo3d_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   neo3d_datasets:
     name: neo3d_datasets
@@ -104,6 +146,8 @@ volumes:
     name: neo3d_outputs
   neo3d_logs:
     name: neo3d_logs
+  neo3d_db_data:
+    name: neo3d_db_data
 
 networks:
   neo3d_net:
