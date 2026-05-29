@@ -116,7 +116,7 @@ export default function PLYViewer({ modelUrl }: PLYViewerProps) {
     );
 
     // ── Animate ──
-    let animId: number;
+    let animId: number = 0;
     const animate = () => {
       animId = requestAnimationFrame(animate);
       controls.update();
