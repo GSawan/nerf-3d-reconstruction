@@ -34,7 +34,7 @@ export default function GaussianViewer({ splatUrl }: GaussianViewerProps) {
           </Bounds>
         </Suspense>
         
-        <EffectComposer disableNormalPass>
+        <EffectComposer>
           <Bloom luminanceThreshold={0.5} mipmapBlur intensity={0.5} />
           <Vignette eskil={false} offset={0.1} darkness={1.1} />
         </EffectComposer>
