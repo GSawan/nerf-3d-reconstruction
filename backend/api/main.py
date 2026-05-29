@@ -17,14 +17,42 @@ os.makedirs("outputs", exist_ok=True)
 os.makedirs("datasets", exist_ok=True)
 
 app = FastAPI(
-    title="NeRF 3D Reconstruction Backend",
-    description="Upload images -> COLMAP sparse reconstruction -> PLY export -> Three.js viewer",
-    version="2.0.0"
+    title="Neo3D Backend",
+    description="Upload images → COLMAP sparse reconstruction → PLY export → Three.js viewer",
+    version="3.0.0"
 )
 
 # Apply Middlewares
 setup_cors(app)
 setup_rate_limiter(app)
+
+# ── Prometheus Metrics ────────────────────────────────────────────────────────
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    from prometheus_client import Counter, Gauge
+
+    Instrumentator(
+        should_group_status_codes=False,
+        excluded_handlers=["/metrics"],
+    ).instrument(app).expose(app, endpoint="/metrics")
+
+    # Custom Neo3D metrics
+    RECONSTRUCTION_COUNTER = Counter(
+        "neo3d_reconstructions_total",
+        "Total reconstruction jobs by status",
+        ["status"]
+    )
+    ACTIVE_JOBS_GAUGE = Gauge(
+        "neo3d_active_jobs",
+        "Number of currently running reconstruction jobs"
+    )
+    # Make available for other modules
+    import builtins
+    builtins.NEO3D_RECON_COUNTER = RECONSTRUCTION_COUNTER
+    builtins.NEO3D_ACTIVE_JOBS = ACTIVE_JOBS_GAUGE
+    logger.info("Prometheus metrics endpoint enabled at /metrics")
+except ImportError:
+    logger.warning("prometheus-fastapi-instrumentator not installed — /metrics disabled")
 
 # Mount Routers
 api_v1_prefix = "/api/v1"
@@ -37,6 +65,13 @@ app.include_router(upload.router, prefix=api_v1_prefix)
 
 from api.routes import reconstruction
 app.include_router(reconstruction.router, prefix=api_v1_prefix)
+
+# Phase 4: Auth + Projects
+from api.routes import auth
+app.include_router(auth.router, prefix=api_v1_prefix)
+
+from api.routes import projects
+app.include_router(projects.router, prefix=api_v1_prefix)
 
 # Static file serving — directories already created above
 app.mount(f"{api_v1_prefix}/outputs", StaticFiles(directory="outputs"), name="outputs")
@@ -62,7 +97,16 @@ async def cleanup_old_datasets():
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Neo3D backend started", extra={"version": "2.0", "pipeline": "COLMAP->PLY->Three.js"})
+    logger.info("Neo3D backend started", extra={"version": "3.0", "pipeline": "COLMAP→PLY→Three.js"})
+
+    # Initialize database tables
+    try:
+        from db.database import init_db
+        await init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.warning(f"Database init warning (continuing): {e}")
+
     asyncio.create_task(cleanup_old_datasets())
 
 

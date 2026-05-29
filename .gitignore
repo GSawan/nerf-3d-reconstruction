@@ -6,6 +6,9 @@ backend/sessions/
 backend/venv/
 backend/env/
 backend/config/
+backend/*.db
+*.db
+
 
 # Frontend
 frontend/node_modules/

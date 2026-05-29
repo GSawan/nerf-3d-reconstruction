@@ -1,8 +1,29 @@
+# Core API
 fastapi
 uvicorn
 python-multipart
-pydantic
+pydantic[email]
+pydantic-settings
+
+# Database (Phase 4)
+sqlalchemy[asyncio]
+aiosqlite
+asyncpg
+alembic
+
+# Auth (Phase 4)
+python-jose[cryptography]
+passlib[bcrypt]
+
+# AWS S3 (Phase 4)
+boto3
+
+# Monitoring (Phase 5)
+prometheus-fastapi-instrumentator
+prometheus-client
+
+# Image processing
 numpy
-opencv-python
+opencv-python-headless
 imageio
 matplotlib

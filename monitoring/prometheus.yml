@@ -1,0 +1,22 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Prometheus Configuration for Neo3D
+# Scrapes metrics from the FastAPI backend every 15 seconds
+# ═══════════════════════════════════════════════════════════════════════════════
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: "neo3d"
+    environment: "production"
+
+scrape_configs:
+  # FastAPI Backend — exposes /metrics via prometheus-fastapi-instrumentator
+  - job_name: "neo3d-backend"
+    static_configs:
+      - targets: ["backend:8000"]
+    metrics_path: /metrics
+
+  # Prometheus itself
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

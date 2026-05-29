@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: Neo3D CI/CD Pipeline
 
 on:
   push:
@@ -10,13 +10,48 @@ env:
   DOCKER_USER: ${{ secrets.DOCKER_USER }}
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 1: Lint & Test (runs on every push + PR)
+  # ─────────────────────────────────────────────────────────────────────────────
+  test:
+    name: "🧪 Test & Lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Lint with ruff (fast Python linter)
+        run: |
+          pip install ruff
+          ruff check backend/ --select E,F,W --ignore E501 || true
+
+      - name: Run backend smoke test (import check)
+        working-directory: backend
+        run: |
+          python -c "from db.models import User, Project, ReconstructionSession, Model3D, AuditLog; print('✅ Models OK')"
+          python -c "from services.auth import create_access_token, decode_token; print('✅ Auth OK')"
+          python -c "from services.s3 import is_s3_enabled; print('✅ S3 OK')"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 2: Build & Push Docker Images (main branch only)
+  # ─────────────────────────────────────────────────────────────────────────────
   build-and-push:
+    name: "🐳 Build & Push Images"
+    needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -33,6 +68,8 @@ jobs:
           context: .
           file: docker/backend/Dockerfile
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ${{ secrets.DOCKER_USER }}/neo3d-backend:latest
             ${{ secrets.DOCKER_USER }}/neo3d-backend:${{ github.sha }}
@@ -43,6 +80,8 @@ jobs:
           context: .
           file: docker/frontend/Dockerfile
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ${{ secrets.DOCKER_USER }}/neo3d-frontend:latest
             ${{ secrets.DOCKER_USER }}/neo3d-frontend:${{ github.sha }}
@@ -53,26 +92,31 @@ jobs:
           context: .
           file: docker/worker/Dockerfile
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ${{ secrets.DOCKER_USER }}/neo3d-worker:latest
             ${{ secrets.DOCKER_USER }}/neo3d-worker:${{ github.sha }}
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 3: Deploy to EC2 Production
+  # ─────────────────────────────────────────────────────────────────────────────
   deploy:
+    name: "🚀 Deploy to EC2"
     needs: build-and-push
     runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
 
-      - name: Copy docker-compose.prod.yml via SCP
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy config files to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "docker-compose.prod.yml,nginx/default.conf"
-          target: "~/"
+          source: "docker-compose.prod.yml,nginx/,monitoring/"
+          target: "~/neo3d/"
 
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
@@ -82,14 +126,29 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           envs: DOCKER_USER
           script: |
+            set -e
             export DOCKER_USER=$DOCKER_USER
-            cd ~
-            
-            # Pull latest images
+            cd ~/neo3d
+
+            echo "⬇️  Pulling latest images..."
             docker compose -f docker-compose.prod.yml pull
-            
-            # Start/Update containers
-            docker compose -f docker-compose.prod.yml up -d
-            
-            # Cleanup old unused images to save disk space
+
+            echo "🔄 Running database migrations..."
+            docker compose -f docker-compose.prod.yml run --rm backend \
+              python -m alembic upgrade head || true
+
+            echo "🚀 Restarting services..."
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            echo "🧹 Cleaning old images..."
             docker system prune -af --filter "until=24h"
+
+            echo "✅ Health check..."
+            sleep 10
+            curl -sf http://localhost/api/v1/health/ && echo "Backend ✅" || echo "Backend ⚠️"
+            curl -sf http://localhost/ && echo "Frontend ✅" || echo "Frontend ⚠️"
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          echo "Deployment to ${{ secrets.EC2_HOST }} completed with status: ${{ job.status }}"

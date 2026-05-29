@@ -18,6 +18,105 @@ from datetime import datetime
 # In-memory job state store
 JOB_STATES = {}
 
+
+def _persist_success(session_id: str, ply_path: str, pt_count: int, cam_count: int, model_url: str):
+    """
+    Post-pipeline: upload PLY to S3 and save Model3D record to DB.
+    Runs in a fire-and-forget fashion — does NOT block the reconstruction response.
+    """
+    try:
+        # ── S3 Upload ────────────────────────────────────────────────
+        from services.s3 import upload_file, get_s3_key_for_output, is_s3_enabled, S3_BUCKET
+        s3_key = None
+        if is_s3_enabled():
+            s3_key = get_s3_key_for_output(session_id)
+            ok = upload_file(ply_path, s3_key, content_type="application/octet-stream")
+            if ok:
+                logging.info(f"[S3] Uploaded PLY → s3://{S3_BUCKET}/{s3_key}")
+            else:
+                s3_key = None  # fallback to local
+
+        # ── DB Persistence ───────────────────────────────────────────
+        import asyncio
+        from db.database import AsyncSessionLocal
+        from db.models import ReconstructionSession, Model3D, ModelFormat, ReconstructionStatus
+        from sqlalchemy import select
+
+        async def _save():
+            async with AsyncSessionLocal() as db:
+                # Update session record
+                result = await db.execute(
+                    select(ReconstructionSession).where(ReconstructionSession.id == session_id)
+                )
+                sess = result.scalar_one_or_none()
+                if sess:
+                    sess.status = ReconstructionStatus.COMPLETED
+                    sess.progress = 100
+                    sess.completed_at = datetime.utcnow()
+                    sess.camera_count = cam_count
+                    sess.point_count = pt_count
+                    if s3_key:
+                        sess.s3_output_prefix = f"outputs/{session_id}/"
+
+                    # Create Model3D record
+                    ply_size = os.path.getsize(ply_path) if os.path.exists(ply_path) else 0
+                    model = Model3D(
+                        session_id=session_id,
+                        format=ModelFormat.PLY,
+                        s3_key=s3_key,
+                        file_size_bytes=ply_size,
+                        point_count=pt_count,
+                        camera_count=cam_count,
+                        local_url=model_url,
+                    )
+                    db.add(model)
+                    await db.commit()
+                    logging.info(f"[DB] Session {session_id[:8]} persisted as COMPLETED")
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_save())
+            else:
+                loop.run_until_complete(_save())
+        except RuntimeError:
+            asyncio.run(_save())
+
+    except Exception as e:
+        logging.warning(f"[POST-PIPELINE] Non-critical persist error: {e}")
+
+
+def _persist_failure(session_id: str, error_msg: str):
+    """Record pipeline failure in the DB. Non-blocking."""
+    try:
+        import asyncio
+        from db.database import AsyncSessionLocal
+        from db.models import ReconstructionSession, ReconstructionStatus
+        from sqlalchemy import select
+
+        async def _save():
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(ReconstructionSession).where(ReconstructionSession.id == session_id)
+                )
+                sess = result.scalar_one_or_none()
+                if sess:
+                    sess.status = ReconstructionStatus.FAILED
+                    sess.error_message = error_msg[:2000]
+                    sess.completed_at = datetime.utcnow()
+                    await db.commit()
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_save())
+            else:
+                loop.run_until_complete(_save())
+        except RuntimeError:
+            asyncio.run(_save())
+    except Exception as e:
+        logging.warning(f"[POST-PIPELINE] Non-critical failure persist error: {e}")
+
 # COLMAP executable path — tries env var first, falls back to known path
 COLMAP_EXE = os.environ.get("COLMAP_PATH", r"C:\Users\Sawan\Downloads\COLMAP\COLMAP.bat")
 
@@ -374,6 +473,9 @@ def run_reconstruction(session_id: str):
 
         logging.info(f"[JOB {session_id[:8]}] SUCCESS - {final_ply} ({ply_size_kb} KB)")
 
+        # Persist to DB + S3 (non-blocking, best-effort)
+        _persist_success(session_id, final_ply, pt_count, cam_count, model_url)
+
     except Exception as e:
         err_msg = str(e)
         # Strip non-ASCII from error message too
@@ -384,3 +486,6 @@ def run_reconstruction(session_id: str):
             error=safe_err
         )
         logging.exception(f"[JOB {session_id[:8]}] Unhandled error in pipeline:")
+
+        # Persist failure to DB (non-blocking, best-effort)
+        _persist_failure(session_id, safe_err)

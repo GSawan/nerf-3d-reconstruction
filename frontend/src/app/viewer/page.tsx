@@ -20,7 +20,7 @@ const PLYViewer = dynamic(() => import('@/components/viewer/PLYViewer'), {
 
 // Use empty string so requests go through Next.js proxy (/api/* → backend)
 // This avoids CORS and works in both dev and prod
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 
 const PHASE_LABELS: Record<string, string> = {
   queued: 'QUEUED — Waiting to start',
