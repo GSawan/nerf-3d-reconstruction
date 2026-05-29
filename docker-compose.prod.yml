@@ -1,0 +1,111 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Neo3D — Production Docker Compose Stack (AWS EC2)
+#
+# This file is used specifically on the AWS EC2 instance.
+# It does NOT build images; it pulls them from a Docker registry.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FRONTEND — Next.js
+  # ─────────────────────────────────────────────────────────────────────────────
+  frontend:
+    # Jenkins will replace ${DOCKER_USER} with your actual registry username
+    image: ${DOCKER_USER:-neo3d}/neo3d-frontend:latest
+    container_name: neo3d_frontend
+    restart: always
+    ports:
+      - "80:3000"  # Expose directly to port 80 for Phase 2.1 (Nginx in 2.5)
+    environment:
+      - NODE_ENV=production
+      - BACKEND_INTERNAL_URL=http://backend:8001
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - neo3d_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BACKEND — FastAPI
+  # ─────────────────────────────────────────────────────────────────────────────
+  backend:
+    image: ${DOCKER_USER:-neo3d}/neo3d-backend:latest
+    container_name: neo3d_backend
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - COLMAP_PATH=/usr/bin/colmap
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      - MAX_UPLOAD_MB=2048
+      - MIN_IMAGES=5
+      - PYTHONUTF8=1
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      - neo3d_datasets:/app/datasets
+      - neo3d_outputs:/app/outputs
+      - neo3d_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - neo3d_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WORKER — COLMAP Reconstruction Engine
+  # ─────────────────────────────────────────────────────────────────────────────
+  worker:
+    image: ${DOCKER_USER:-neo3d}/neo3d-worker:latest
+    container_name: neo3d_worker
+    profiles:
+      - reconstruction
+    environment:
+      - COLMAP_PATH=/usr/bin/colmap
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      - PYTHONUTF8=1
+    volumes:
+      - neo3d_datasets:/datasets
+      - neo3d_outputs:/outputs
+      - neo3d_logs:/logs
+    deploy:
+      resources:
+        limits:
+          memory: 3.5G      # Capped slightly below 4GB for t3.medium safety
+          cpus: '2.0'       # Use 2 vCPUs
+    networks:
+      - neo3d_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  neo3d_datasets:
+    name: neo3d_datasets
+  neo3d_outputs:
+    name: neo3d_outputs
+  neo3d_logs:
+    name: neo3d_logs
+
+networks:
+  neo3d_net:
+    driver: bridge
+    name: neo3d_network

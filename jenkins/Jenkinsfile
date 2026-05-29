@@ -1,53 +1,45 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Neo3D — Jenkins CI Pipeline
+// Neo3D — Jenkins CI/CD Pipeline
 // Declarative Pipeline (Groovy DSL)
 //
 // Stages:
 //   1. Checkout         — Pull latest code from Git
-//   2. Validate Env     — Verify .env and COLMAP config
-//   3. Build Images     — docker compose build (all 3 services)
-//   4. Smoke Test       — Start backend, hit /health/, stop
+//   2. Validate Env     — Verify .env and config
+//   3. Build Images     — docker compose build
+//   4. Smoke Test       — Start backend locally, hit /health/
 //   5. Validate API     — Run backend's validation script
-//   6. Report           — Archive logs, print result summary
-//
-// Triggered by: Manual "Build Now" in Jenkins UI, or webhook on git push
+//   6. Push to Registry — Push Docker images to Docker Hub
+//   7. Deploy to EC2    — SSH into EC2, pull images, and restart containers
+//   8. Report           — Print result summary
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pipeline {
-
     agent any
 
-    // ─── Global options ───────────────────────────────────────────────────────
     options {
-        // Abort build if it takes more than 30 minutes (prevents hung COLMAP builds)
         timeout(time: 30, unit: 'MINUTES')
-        // Add timestamps to every log line
         timestamps()
-        // Color ANSI output in Jenkins console
         ansiColor('xterm')
-        // Keep only last 10 builds to save disk space
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        // Prevent concurrent builds of the same job
         disableConcurrentBuilds()
     }
 
-    // ─── Environment variables ────────────────────────────────────────────────
     environment {
-        // Docker Compose project name (prevents conflicts with other compose projects)
         COMPOSE_PROJECT_NAME = 'neo3d_ci'
-        // Images are tagged with git commit SHA for traceability
         IMAGE_TAG = "${env.GIT_COMMIT?.take(8) ?: 'latest'}"
-        // Backend health check URL (used inside the Jenkins container/host)
         BACKEND_HEALTH_URL = 'http://localhost:8001/api/v1/health/'
+        
+        // Docker Hub Credentials (must be configured in Jenkins Credentials as 'dockerhub-creds')
+        DOCKER_USER = credentials('dockerhub-creds-user')
+        DOCKER_PASS = credentials('dockerhub-creds-pass')
+
+        // EC2 Deployment Credentials
+        // EC2_SSH_KEY: Jenkins SSH Username with private key credential ('ec2-ssh-key')
+        // EC2_HOST: e.g., 'ubuntu@3.111.222.111' configured as secret text or injected via env
+        EC2_HOST = credentials('ec2-host')
     }
 
     stages {
-
-        // ─────────────────────────────────────────────────────────────────────
-        // STAGE 1: Checkout
-        // Pull the latest code from Git.
-        // Jenkins stores the repo in the workspace (/var/jenkins_home/workspace/neo3d)
-        // ─────────────────────────────────────────────────────────────────────
         stage('Checkout') {
             steps {
                 echo '=== STAGE 1: Pulling latest code ==='
@@ -57,131 +49,58 @@ pipeline {
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STAGE 2: Validate Environment
-        // Check that all required files and configs are present
-        // before wasting time building Docker images.
-        // ─────────────────────────────────────────────────────────────────────
         stage('Validate Environment') {
             steps {
                 echo '=== STAGE 2: Validating environment ==='
-
                 script {
-                    // Check .env exists
-                    if (!fileExists('.env')) {
-                        error('.env file is missing. Copy .env.example to .env and fill in values.')
-                    }
-                    echo '[OK] .env file found'
-
-                    // Check docker-compose.yml exists
-                    if (!fileExists('docker-compose.yml')) {
-                        error('docker-compose.yml not found')
-                    }
-                    echo '[OK] docker-compose.yml found'
-
-                    // Check all Dockerfiles exist
-                    def dockerfiles = [
-                        'docker/backend/Dockerfile',
-                        'docker/worker/Dockerfile',
-                        'docker/frontend/Dockerfile'
-                    ]
-                    dockerfiles.each { f ->
-                        if (!fileExists(f)) {
-                            error("Missing Dockerfile: ${f}")
-                        }
-                        echo "[OK] ${f} found"
-                    }
-
-                    // Check reconstruction worker exists
-                    if (!fileExists('backend/workers/reconstruction_worker.py')) {
-                        error('reconstruction_worker.py is missing — pipeline core is broken')
-                    }
-                    echo '[OK] reconstruction_worker.py found'
-
+                    if (!fileExists('.env')) error('.env file missing.')
+                    if (!fileExists('docker-compose.yml')) error('docker-compose.yml missing.')
                     echo '\033[32m[PASS] All environment checks passed\033[0m'
                 }
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STAGE 3: Build Docker Images
-        // Build all 3 service images using docker compose.
-        // --no-cache on main branch, cached builds on feature branches.
-        // ─────────────────────────────────────────────────────────────────────
         stage('Build Images') {
             steps {
                 echo '=== STAGE 3: Building Docker images ==='
                 script {
                     def buildArgs = env.BRANCH_NAME == 'main' ? '--no-cache' : ''
-                    sh "docker compose build ${buildArgs} backend"
-                    echo '[OK] Backend image built'
-
-                    sh "docker compose build ${buildArgs} frontend"
-                    echo '[OK] Frontend image built'
-
-                    // Worker is optional — build it but don't fail pipeline if slow
-                    sh "docker compose build ${buildArgs} worker || echo '[WARN] Worker build failed — non-critical for smoke test'"
-                    echo '[OK] Worker image built (or skipped)'
-
-                    // Show built image sizes
-                    sh "docker images | grep neo3d"
+                    
+                    // Build tagging with both 'latest' and the git SHA
+                    sh "docker build ${buildArgs} -t ${DOCKER_USER}/neo3d-backend:latest -t ${DOCKER_USER}/neo3d-backend:${IMAGE_TAG} -f docker/backend/Dockerfile ."
+                    sh "docker build ${buildArgs} -t ${DOCKER_USER}/neo3d-frontend:latest -t ${DOCKER_USER}/neo3d-frontend:${IMAGE_TAG} -f docker/frontend/Dockerfile ."
+                    sh "docker build ${buildArgs} -t ${DOCKER_USER}/neo3d-worker:latest -t ${DOCKER_USER}/neo3d-worker:${IMAGE_TAG} -f docker/worker/Dockerfile ."
                 }
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STAGE 4: Smoke Test
-        // Start the backend container, verify it responds to /health/,
-        // then tear it down. This confirms the container starts without errors.
-        // ─────────────────────────────────────────────────────────────────────
         stage('Smoke Test') {
             steps {
                 echo '=== STAGE 4: Smoke test (backend health check) ==='
                 script {
                     try {
-                        // Start only the backend (not frontend or worker)
                         sh 'docker compose up -d backend'
-
-                        // Wait for it to initialize (health check takes ~15s)
-                        echo 'Waiting 20s for backend to initialize...'
                         sleep(20)
-
-                        // Hit the health endpoint — must return HTTP 200
                         sh "curl --fail --silent --show-error --max-time 10 ${BACKEND_HEALTH_URL}"
                         echo '\033[32m[PASS] Backend health check passed\033[0m'
-
                     } finally {
-                        // Always tear down, even if the test fails
                         sh 'docker compose down --remove-orphans'
-                        echo 'Backend container stopped and removed'
                     }
                 }
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STAGE 5: API Validation
-        // Run the backend's own validation script to check route contracts.
-        // This ensures the API hasn't broken any endpoints.
-        // ─────────────────────────────────────────────────────────────────────
         stage('Validate API') {
             steps {
                 echo '=== STAGE 5: API contract validation ==='
                 script {
                     try {
-                        // Start backend
                         sh 'docker compose up -d backend'
                         sleep(20)
-
-                        // Run validation script inside the backend container
                         sh 'docker compose exec -T backend python run_api_validation.py'
                         echo '\033[32m[PASS] API validation passed\033[0m'
-
                     } catch (Exception e) {
-                        // Validation failure is a warning, not a hard failure
-                        // (validation script may not exist in all branches)
                         echo "\033[33m[WARN] API validation skipped or failed: ${e.message}\033[0m"
-
                     } finally {
                         sh 'docker compose down --remove-orphans'
                     }
@@ -189,24 +108,60 @@ pipeline {
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STAGE 6: Report
-        // Archive build artifacts, print summary, tag Git commit if on main.
-        // ─────────────────────────────────────────────────────────────────────
+        stage('Push to Registry') {
+            // Only push to registry if we are on the main branch
+            when { branch 'main' }
+            steps {
+                echo '=== STAGE 6: Pushing images to Docker Hub ==='
+                script {
+                    sh "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
+                    
+                    sh "docker push ${DOCKER_USER}/neo3d-backend:latest"
+                    sh "docker push ${DOCKER_USER}/neo3d-backend:${IMAGE_TAG}"
+                    
+                    sh "docker push ${DOCKER_USER}/neo3d-frontend:latest"
+                    sh "docker push ${DOCKER_USER}/neo3d-frontend:${IMAGE_TAG}"
+                    
+                    sh "docker push ${DOCKER_USER}/neo3d-worker:latest"
+                    sh "docker push ${DOCKER_USER}/neo3d-worker:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Deploy to EC2') {
+            // Only deploy from main branch
+            when { branch 'main' }
+            steps {
+                echo '=== STAGE 7: Deploying to AWS EC2 ==='
+                withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    script {
+                        // Transfer docker-compose.prod.yml to the EC2 instance
+                        sh "scp -i ${SSH_KEY} -o StrictHostKeyChecking=no docker-compose.prod.yml ${EC2_HOST}:~/docker-compose.yml"
+                        
+                        // Execute pull and up on the EC2 instance
+                        def deployCmd = """
+                            export DOCKER_USER=${DOCKER_USER}
+                            docker compose pull
+                            docker compose up -d
+                            docker system prune -f
+                        """
+                        sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${EC2_HOST} '${deployCmd}'"
+                        echo '\033[32m[PASS] Deployed successfully to EC2\033[0m'
+                    }
+                }
+            }
+        }
+
         stage('Report') {
             steps {
-                echo '=== STAGE 6: Build report ==='
+                echo '=== STAGE 8: Build report ==='
                 script {
-                    // Print final image info
-                    sh "docker images | grep neo3d || true"
-
                     echo """
 ╔══════════════════════════════════════════════════════╗
-║            Neo3D CI Pipeline — COMPLETE              ║
+║            Neo3D CI/CD Pipeline — COMPLETE           ║
 ╠══════════════════════════════════════════════════════╣
 ║  Branch:   ${env.BRANCH_NAME ?: 'unknown'}
 ║  Commit:   ${IMAGE_TAG}
-║  Build #:  ${env.BUILD_NUMBER}
 ║  Status:   SUCCESS
 ╚══════════════════════════════════════════════════════╝
 """
@@ -215,20 +170,15 @@ pipeline {
         }
     }
 
-    // ─── Post Actions ─────────────────────────────────────────────────────────
     post {
         always {
-            // Always clean up containers — prevents resource leaks
             sh 'docker compose down --remove-orphans --volumes 2>/dev/null || true'
-
-            // Archive Jenkins logs
+            sh 'docker logout || true'
             archiveArtifacts artifacts: 'logs/*.log', allowEmptyArchive: true
         }
-
         success {
             echo '\033[32m✓ Neo3D CI Pipeline PASSED\033[0m'
         }
-
         failure {
             echo '\033[31m✗ Neo3D CI Pipeline FAILED — Check logs above\033[0m'
         }
