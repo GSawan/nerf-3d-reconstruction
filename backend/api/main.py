@@ -19,7 +19,7 @@ os.makedirs("datasets", exist_ok=True)
 app = FastAPI(
     title="Neo3D Backend",
     description="Upload images → COLMAP sparse reconstruction → PLY export → Three.js viewer",
-    version="3.0.0"
+    version="3.0.1"
 )
 
 # Apply Middlewares
