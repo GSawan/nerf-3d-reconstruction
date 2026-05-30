@@ -56,14 +56,9 @@ class Preprocessor:
             new_w, new_h = int(w * scale), int(h * scale)
             img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Dataset Quality Checks
+        # Dataset Quality Checks (Just calculate scores, don't reject)
         blur_score = self.compute_blur_score(img)
-        if blur_score < 30.0:
-            return None, f"blurry ({blur_score:.1f})"
-            
         texture_score = self.compute_texture_score(img)
-        if texture_score < 10.0:
-            return None, f"low_texture ({texture_score:.1f})"
 
         # Apply Sharpening
         img = self.apply_unsharp_mask(img)
