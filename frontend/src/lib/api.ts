@@ -20,7 +20,9 @@ export const NeRFApi = {
     const formData = new FormData();
     files.forEach(file => formData.append('files', file));
     formData.append('mode', mode);
-    const res = await apiClient.post<SessionResponse>('/upload/', formData);
+    const res = await apiClient.post<SessionResponse>('/upload/', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
     return res.data;
   },
 
