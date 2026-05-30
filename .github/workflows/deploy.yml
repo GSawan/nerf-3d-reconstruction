@@ -80,39 +80,26 @@ jobs:
         run: docker build -t neo3d-frontend-test -f docker/frontend/Dockerfile .
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # JOB 4: AWS EC2 Deployment
+  # JOB 4: Prepare Deployment Artifacts
   # ─────────────────────────────────────────────────────────────────────────────
-  deploy:
-    name: "🚀 Deploy to AWS EC2"
+  package-release:
+    name: "📦 Prepare Release"
     runs-on: ubuntu-latest
     needs: docker-build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            set -e
+      - uses: actions/checkout@v4
 
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "  Neo3D Auto-Deploy — $(date)"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-            cd ~/nerf-3d-reconstruction || { echo "❌ Project folder not found"; exit 1; }
-
-            echo "📥 Pulling latest code from main..."
-            git fetch origin main
-            git reset --hard origin/main
-
-            echo "🔨 Building and starting containers..."
-            docker compose down --remove-orphans
-            docker compose up --build -d
-
-            echo "⏳ Waiting for services to initialize..."
-            sleep 15
-
-            echo "✅ Deploy complete! Systems are online."
+      - name: Generate Release Manifest
+        run: |
+          echo "Generating deployment manifest for Neo3D..."
+          mkdir -p release
+          cp docker-compose.yml release/
+          echo '{"version": "3.0.1", "build_date": "'$(date)'"}' > release/build-info.json
+          tar -czvf neo3d-release.tar.gz release/
+          
+      - name: Verify Artifacts
+        run: |
+          echo "✅ Artifacts generated successfully."
+          ls -lh neo3d-release.tar.gz
