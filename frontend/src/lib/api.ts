@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { SessionResponse, JobStatusResponse } from '@/types/api';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://13.206.196.149:8001/api/v1';
 
 export const apiClient = axios.create({
   baseURL: API_BASE,
@@ -20,9 +20,7 @@ export const NeRFApi = {
     const formData = new FormData();
     files.forEach(file => formData.append('files', file));
     formData.append('mode', mode);
-    const res = await apiClient.post<SessionResponse>('/upload/', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    const res = await apiClient.post<SessionResponse>('/upload/', formData);
     return res.data;
   },
 
