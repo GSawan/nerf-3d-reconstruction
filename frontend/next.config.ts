@@ -13,7 +13,7 @@ const nextConfig: NextConfig = {
         // In Docker, 'backend' is the service hostname (docker-compose service name)
         // Locally, falls back to 127.0.0.1:8001
         source: '/api/:path*',
-        destination: `${process.env.BACKEND_INTERNAL_URL || 'http://127.0.0.1:8001'}/api/:path*`,
+        destination: `${process.env.BACKEND_INTERNAL_URL || 'http://13.206.196.149:8001'}/api/:path*`,
       },
     ];
   },
